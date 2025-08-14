@@ -9,6 +9,53 @@
 #include <libavutil/imgutils.h>
 #include <libswscale/swscale.h>
 
+void SaveGreyFramePPM(uint8_t *pixels, int wrap, int height, int width, char* filename) {
+    FILE *fp = fopen(filename, "w");
+    printf("\n\nWrap: %d\n\n", wrap);
+    fprintf(fp, "P5\n%d %d\n%d\n", width, height, 255);
+    for (int i = 0; i < height; i++) {
+        unsigned char *ch = (pixels + i * wrap);
+        fwrite(ch, 1, width, fp);
+    }
+    fclose(fp);
+}
+
+int DecodeVideoPacket_GreyFrame(AVPacket *packet, AVCodecContext *codecContext, AVFrame *frame) {
+    int returnValue = 0;
+
+    returnValue = avcodec_send_packet(codecContext, packet);
+    if (returnValue != 0) {
+        av_log(NULL, AV_LOG_ERROR, "Error decompressing packet\n");
+        return returnValue;
+    }
+    while (returnValue >= 0) {
+        returnValue = avcodec_receive_frame(codecContext, frame);
+        if (returnValue == AVERROR(EAGAIN)) {
+            printf("Not enough data\n");
+            av_frame_unref(frame);
+            av_freep(frame);
+            break;
+        } else if (returnValue == AVERROR_EOF) {
+            av_log(NULL, AV_LOG_ERROR, "End of File reached\n");
+            av_frame_unref(frame);
+            av_freep(frame);
+            return returnValue;
+        } else if (returnValue < 0) {
+            av_log(NULL, AV_LOG_ERROR, "Error in receiving frame\n");
+            av_frame_unref(frame);
+            av_freep(frame);
+            return returnValue;
+        } else {
+            printf("Frame number: %d (type=%c frame, size = %d bytes, width = %d, height = %d) pts %ld key_frame %d [DTS %d]\n",
+                   codecContext->frame_number, av_get_picture_type_char(frame->pict_type), frame->pkt_size, frame->width, frame->height, frame->pts,
+                   frame->key_frame, frame->coded_picture_number);
+            SaveGreyFramePPM(frame->data[0], frame->linesize[0], frame->height, frame->width, "Test.ppm");
+        }
+    }
+
+    return returnValue;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
         printf("Usage: %s <filename>\n", argv[0]);
@@ -99,6 +146,52 @@ int main(int argc, char** argv) {
             printf("\nFound subtitle stream\n");
         }
     }
+    if (videoStreamIndex == -1) {
+        av_log(NULL, AV_LOG_ERROR, "Error finding video stream\n");
+        return -1;
+    }
 
+    videoCodecContext = avcodec_alloc_context3(videoCodec);
+    if (!videoCodecContext) {
+        av_log(NULL, AV_LOG_ERROR, "Error allocating codec context\n");
+        return -1;
+    }
+
+    returnValue = avcodec_parameters_to_context(videoCodecContext, videoCodecParameters);
+    if (returnValue != 0) {
+        av_log(NULL, AV_LOG_ERROR, "Error copying codec parameters to context\n");
+        return -1;
+    }
+
+    returnValue = avcodec_open2(videoCodecContext, videoCodec, NULL);
+    if (returnValue != 0) {
+        av_log(NULL, AV_LOG_ERROR, "Error opening avcodec\n");
+        return -1;
+    }
+
+    int packetCount = 0;
+    while (av_read_frame(formatContext, packet) >= 0) {
+        if (packet->stream_index == videoStreamIndex) {
+            int64_t duration = packet->pts;
+            //printf("Video packet: \n");
+            //FormatDuration(duration);
+            returnValue = DecodeVideoPacket_GreyFrame(packet, videoCodecContext, videoFrame);
+        } else if (packet->stream_index == audioStreamIndex) {
+            int64_t duration = packet->pts;
+            //printf("Audio packet: \n");
+            //FormatDuration(duration);
+        }
+        packetCount += 1;
+        av_packet_unref(packet);
+        //if (packetCount == 10) {
+         //   break;
+       // }
+    }
+
+    sws_freeContext(swsContext);
+    avformat_close_input(&formatContext);
+    av_packet_free(&packet);
+    av_free(videoFrame);
+    avcodec_free_context(&videoCodecContext);
     return 0;
 }

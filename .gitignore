@@ -1,0 +1,4 @@
+# Ignore all .mp4
+*.mp4
+
+*.ppm
